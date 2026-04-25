@@ -1,0 +1,9 @@
+.idea
+.claude
+.cache
+.bash_history
+.npm
+.claude.json
+data
+skim/target
+.npm-global
