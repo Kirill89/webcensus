@@ -18,19 +18,21 @@ narrow funnel that throws away non-candidates as cheaply as possible, so the
 expensive stages only see hosts that survived the previous filter.
 
 ```
-domain list  ──►  DNS (A records)  ──►  HTTPS probe  ──►  download & verify
-  ~10M             massdns              skim (Rust)        bun script
-  domains          ~100k qps            status + cert      content-shape gate
+domain list  ─►  DNS (A records)  ─►  HTTPS probe  ─►  bulk fetch  ─►  verify
+                 massdns              skim (Rust)       curl --parallel  bun
+                 UDP-fast             status + cert     bounded retries  shape gate
 ```
 
 ## How to use
 
 ```sh
 make shell                                # build & enter the sandbox
-./scripts/step1_download_domain_list.sh   # or bring your own domains.txt
+./scripts/step1_download_domain_list.sh   # or bring your own data/domains.txt
 ./scripts/step2_massdns.sh
 ./scripts/step3_probe_status.sh
-./scripts/step4_collect.sh
+./scripts/step4_curl_config.mjs
+./scripts/step5_curl.sh
+./scripts/step6_filter.mjs
 ```
 
 All artifacts land in `./data/` on the host (mounted into the container).
@@ -85,24 +87,67 @@ Why it's fast:
 - Pre-pass scans the input once to count probeable rows for a real ETA;
   `--skip-precount` skips it on resume.
 
-### 4. Download & verify — `step4_collect.sh`
+### 4. Build curl config — `step4_curl_config.mjs`
 
-Filters `status.ndjson` to rows where `code == 200 && cert_ok == true && status == "success"`,
-fetches each URL with `bun`, and runs a **content-shape verifier** before
-saving (`scripts/download-and-verify.mjs`).
+Streams `data/status.ndjson` and writes `data/urls.curl`, a curl `-K` config
+file with one entry per URL where `cert_ok && status == "success" && code == 200`:
 
+```
+url = "https://example.com/.well-known/security.txt"
+output = "example.com_.well-known_security.txt"
+
+url = "https://github.com/.well-known/security.txt"
+output = "github.com_.well-known_security.txt"
+```
+
+Each `output =` is the URL with non-alnum characters replaced by `_`, so files
+land with stable, collision-resistant names. The script also prints a quick
+sanity check: how many rows had `code == 200` vs how many were probeable at all.
+
+Why a separate stage: keeping config generation in JS means the URL-shape
+filter and filename rules live next to the rest of the pipeline's logic, and
+the curl call itself stays a one-liner.
+
+### 5. Bulk fetch — `step5_curl.sh`
+
+Runs `curl --parallel -K data/urls.curl` to download every URL into
+`data/unfiltered/`. The flags are tuned for "many small files from many
+different hosts":
+
+- `--parallel-max 50` — concurrent in-flight transfers.
+- `--max-filesize 5M` — pre-flight reject responses with `Content-Length > 5MB`.
+- `--max-time 10` — total wall-clock cap per attempt (protects against servers
+  that trickle data forever with no `Content-Length`).
+- `--connect-timeout 3` — TCP connect budget.
+- `--retry 2 --retry-delay 5 --retry-max-time 30` — bounded retry budget so a
+  flaky host can't pin its slot for minutes.
+
+Why curl `--parallel` and not aria2c / wget2: curl is the only mainstream tool
+that can hard-cap response **size** (`--max-filesize`) — important when servers
+return 200 + multi-megabyte HTML in place of the file you wanted. It also runs
+in a single process, so 1M URLs don't pay 1M `fork()` calls.
+
+### 6. Content-shape verify — `step6_filter.mjs`
+
+Walks `data/unfiltered/` offline and copies survivors into `data/filtered/`.
 The default `text-file` verifier rejects:
+
 - bodies shorter than 16 chars (empty / "Not Found" / "OK"),
-- bodies containing control characters (binary noise),
+- bodies with control characters or invalid UTF-8 (binary noise),
 - bodies that look like HTML, PHP source, or JSON (servers that 200-OK every
   path with a SPA shell or a generic JSON error).
 
-A `json` verifier mode is also available for paths that should be JSON
-(`/.well-known/security.txt` is plain text, so the default is what you want
-for it).
+A `json` verifier is also available for paths that should be JSON; pass it as
+the first arg:
 
-Surviving files are written to `data/files/` named after the URL — these are
-your real, content-verified hits.
+```sh
+./scripts/step6_filter.mjs json
+```
+
+Why a separate stage: the verifier is **pure offline** — no network, no
+ordering constraints, idempotent, and re-runnable with different rules without
+re-fetching. Add a new verifier to `step6_filter.mjs` and re-run; bandwidth
+already spent.
 
 ## Why this is fast end-to-end
 
@@ -110,14 +155,16 @@ The pipeline is funnel-shaped. Each step is roughly an order of magnitude
 cheaper *per host* than the next, so the expensive stages only ever see a
 small fraction of the input:
 
-| Stage    | Per-host cost           | What it eliminates                       |
-|----------|-------------------------|------------------------------------------|
-| massdns  | one UDP round-trip      | parked / dead / NXDOMAIN domains         |
-| skim     | one TLS + status line   | hosts without 443, bad cert, non-200     |
-| collect  | one full HTTPS GET      | 200-OK-but-not-actually-the-file noise   |
+| Stage             | Per-host cost              | What it eliminates                       |
+|-------------------|----------------------------|------------------------------------------|
+| massdns           | one UDP round-trip         | parked / dead / NXDOMAIN domains         |
+| skim              | one TLS + status line      | hosts without 443, bad cert, non-200     |
+| curl --parallel   | one full HTTPS GET (capped)| oversized / hung / unreachable hosts     |
+| filter (offline)  | one regex pass per file    | 200-OK-but-not-actually-the-file noise   |
 
-Plus: massdns output → skim input is the same NDJSON; skim output → collect
-input is the same NDJSON. No format conversions between stages.
+Plus: massdns output → skim input is the same NDJSON; skim output → curl
+config is one streaming pass. No expensive format conversions between stages,
+and the verifier stage doesn't touch the network at all.
 
 ## Domain list sources
 
@@ -150,9 +197,9 @@ input is the same NDJSON. No format conversions between stages.
 ## Repo layout
 
 ```
-Dockerfile, Makefile      — sandbox image (Ubuntu + node + bun + rust + massdns)
+Dockerfile, Makefile      — sandbox image (Ubuntu + node + bun + rust + massdns + curl)
 ai-sandbox/               — same sandbox + claude-code, for AI-assisted iteration
-scripts/                  — the four pipeline steps
+scripts/                  — the six pipeline steps
 skim/                     — Rust HTTPS prober (status-line + cert verdict)
 resolvers.txt             — curated public DNS resolvers for massdns
 data/                     — pipeline outputs (gitignored, mounted from host)
@@ -181,6 +228,10 @@ see the disclaimer at the top of this README.
 
 - `scripts/step3_probe_status.sh` — change `--path` to hunt a different file,
   bump `--concurrency` if your network can handle it.
-- `scripts/step4_collect.sh` — fourth arg is the verifier: `text-file` (default)
-  or `json`.
+- `scripts/step5_curl.sh` — tune `--parallel-max`, `--max-filesize`,
+  `--max-time`, and the retry budget. The defaults are conservative; bump
+  `--parallel-max` to 200+ if your machine and `ulimit -n` allow.
+- `scripts/step6_filter.mjs` — first arg picks the verifier (`text-file` is
+  default, `json` also built in). Add new verifiers as keys in the
+  `verifiers` object.
 - `resolvers.txt` — add/remove resolvers; massdns load-balances across the list.

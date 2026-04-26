@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 massdns \
   --resolvers resolvers.txt \
@@ -6,4 +7,4 @@ massdns \
   --output J \
   --retry REFUSED \
   --retry SERVFAIL \
-  "/root/data/domains.txt" > "/root/data/dns.ndjson"
+  "data/domains.txt" > "data/dns.ndjson"
