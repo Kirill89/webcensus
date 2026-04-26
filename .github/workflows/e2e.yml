@@ -1,0 +1,75 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - 'ai-sandbox/**'
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - 'ai-sandbox/**'
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build webcensus image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: webcensus:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Prepare input from domain-lists/sample.txt
+        run: |
+          mkdir -p data
+          cp domain-lists/sample.txt data/domains.txt
+          cat data/domains.txt
+
+      - name: Run pipeline (steps 2-6) targeting /robots.txt
+        run: |
+          docker run --rm \
+            -v "$PWD/data:/root/data" \
+            webcensus:ci \
+            bash -c '
+              set -euo pipefail
+              ./scripts/step2_massdns.sh
+              ./scripts/step3_probe_status.sh /robots.txt
+              ./scripts/step4_curl_config.mjs
+              ./scripts/step5_curl.sh
+              ./scripts/step6_filter.mjs
+
+              echo "--- filtered files ---"
+              ls -la data/filtered
+              count=$(find data/filtered -maxdepth 1 -type f | wc -l)
+              echo "filtered count: $count"
+              test "$count" -gt 0
+            '
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== data tree ==="
+          sudo ls -laR data/ || true
+          for f in dns.ndjson status.ndjson urls.curl; do
+            echo "=== $f ==="
+            sudo cat "data/$f" 2>/dev/null || echo "(missing)"
+          done
+          echo "=== unfiltered (first 5 files, head 20 lines) ==="
+          sudo find data/unfiltered -maxdepth 1 -type f | head -5 | while read f; do
+            echo "--- $f ---"
+            sudo head -20 "$f"
+          done

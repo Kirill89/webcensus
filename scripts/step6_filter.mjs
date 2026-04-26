@@ -18,14 +18,14 @@ const verifiers = {
             return false;
         }
 
-        // Filter out unprintable characters (binary?).
-        if (/\p{C}/u.test(clean)) {
-            return false;
-        }
-
         // Reject files that weren't valid UTF-8: Node replaces invalid sequences
         // with U+FFFD, which slips past the \p{C} control-char check below.
         if (text.includes('\ufffd')) {
+            return false;
+        }
+
+        // Filter out unprintable characters (binary?).
+        if (/\p{C}/u.test(clean)) {
             return false;
         }
 

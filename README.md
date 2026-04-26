@@ -202,8 +202,43 @@ ai-sandbox/               — same sandbox + claude-code, for AI-assisted iterat
 scripts/                  — the six pipeline steps
 skim/                     — Rust HTTPS prober (status-line + cert verdict)
 resolvers.txt             — curated public DNS resolvers for massdns
+domain-lists/             — published domain lists produced by this pipeline
 data/                     — pipeline outputs (gitignored, mounted from host)
 ```
+
+## Datasets
+
+This repo also publishes domain lists produced by running the pipeline. Each
+list is a snapshot — the web changes, so the list is correct *as of its date*
+and only that date.
+
+**Naming convention:** `YYYY-MM-DD-<descriptor>.txt`, one apex domain per line,
+no header, sorted alphabetically. The date prefix is the day the scan was run.
+
+**Available lists:**
+
+- **`2026-04-26-with-security-txt.txt`** (14,611 domains) — domains that
+  served a content-verified `/.well-known/security.txt` over HTTPS with a
+  valid certificate, when probed on 2026-04-26. Methodology: pipeline run
+  with the CrUX top-sites list as input, `step3` targeting
+  `/.well-known/security.txt`, and the default `text-file` verifier in
+  `step6` (rejects empty bodies, HTML/JSON/PHP shapes, binary noise, and
+  invalid UTF-8). Domains where the file existed but was an HTML 404 page
+  served with a 200 status are excluded.
+
+- **`sample.txt`** (3 domains) — a tiny fixture list (`example.com`,
+  `google.com`, `github.com`) used by the e2e CI workflow to smoke-test the
+  pipeline against `/robots.txt`. Not a research artifact.
+
+More lists will be added as new scans are run (different paths,
+different dates, different domain-list inputs). To reproduce any list,
+run the pipeline yourself with the documented date as the CrUX snapshot —
+the pipeline is deterministic given a fixed input list.
+
+**Use of these datasets**: see the [Disclaimer](#webcensus) at the top.
+Domains are public information; if you build derivative tools on these
+lists, be a good neighbor (identifying UA, low concurrency, honor
+takedowns).
 
 ## Citation
 
