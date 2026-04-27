@@ -34,11 +34,26 @@ const verifiers = {
             !clean.includes('<html>') &&
             !clean.includes('<title>') &&
             !clean.includes('</p>') &&
+            !clean.includes('<imgsrc=') &&
+            !clean.includes('</center>') &&
+            !clean.includes('</table>') &&
             !clean.includes('</b>') &&
             !clean.includes('</b>') &&
+            !clean.includes('[0]=>') &&
+            !clean.includes(':require():') &&
+            !clean.includes(':include():') &&
+            !clean.includes('#ext-x-stream-inf:') &&
+            !clean.includes('</a>') &&
             !clean.includes('<br/>') &&
             !clean.includes('<br>') &&
+            !clean.includes('</script>') &&
+            !clean.includes('</span>') &&
+            !clean.includes('</pre>') &&
+            !clean.includes('</font>') &&
+            !clean.includes('</style>') &&
+            !clean.includes('</iframe>') &&
             !clean.includes('<?php') &&
+            !clean.includes('<?xml') &&
             !clean.includes('<metahttp-equiv') &&
             !clean.startsWith('{"') &&
             !clean.includes('(function(') &&
@@ -55,6 +70,22 @@ const verifiers = {
         } else {
             return false;
         }
+    },
+    'env': (text) => {
+        if (!verifiers['text-file'](text)) {
+            return false;
+        }
+
+        return text.includes('=');
+    },
+    'security.txt': (text) => {
+        if (!verifiers['text-file'](text)) {
+            return false;
+        }
+
+        const clean = text.toLowerCase().replace(/\s/g, '');
+
+        return clean.includes('contact:') || clean.includes('expires:');
     },
 };
 
