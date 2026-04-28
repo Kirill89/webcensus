@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import {YAML} from 'bun';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -86,6 +87,47 @@ const verifiers = {
         const clean = text.toLowerCase().replace(/\s/g, '');
 
         return clean.includes('contact:') || clean.includes('expires:');
+    },
+    'yaml': (text) => {
+        try {
+            const result = YAML.parse(text);
+
+            if (typeof result === 'string') {
+                return false;
+            }
+
+            if (typeof result === 'object' && Object.keys(result).length === 1) {
+                return false;
+            }
+
+            if (verifiers['json'](text)) {
+                return false;
+            }
+
+            return true;
+        } catch (_) {
+            return false;
+        }
+    },
+    'docker': (text) => {
+        return text.includes('FROM ');
+    },
+    'sql-dump': (text) => {
+        return text.includes('CREATE TABLE ');
+    },
+    'makefile': (text) => {
+        if (!/^\t.*$/m.test(text)) {
+            return false;
+        }
+
+        return verifiers['text-file'](text);
+    },
+    'claude-settings': (text) => {
+        if (!verifiers['json'](text)) {
+            return false;
+        }
+
+        return text.includes('"permissions"');
     },
 };
 
